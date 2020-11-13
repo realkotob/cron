@@ -3,7 +3,7 @@ use schedule::{Ordinal, OrdinalSet};
 use std::borrow::Cow;
 use time_unit::TimeUnitField;
 
-#[derive(Clone, Debug)]
+#[derive(Clone,Default, Debug)]
 pub struct DaysOfWeek(OrdinalSet);
 
 impl TimeUnitField for DaysOfWeek {

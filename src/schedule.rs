@@ -1,5 +1,5 @@
 use chrono::offset::TimeZone;
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, NaiveDateTime, Timelike, Utc};
 use error::{Error, ErrorKind};
 use nom::{types::CompleteStr as Input, *};
 use std::collections::BTreeSet;
@@ -10,9 +10,15 @@ use std::str::{self, FromStr};
 
 use time_unit::*;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Schedule {
     source: Option<String>,
+    instant: Option<i64>,
+    details: ScheduleDetails,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct ScheduleDetails {
     years: Years,
     days_of_week: DaysOfWeek,
     months: Months,
@@ -143,7 +149,7 @@ impl Schedule {
             .map(Years::from_field)
             .unwrap_or_else(|| Ok(Years::all()))?;
 
-        Ok(Schedule::from(
+        Ok(Schedule::from_ordinals(
             seconds,
             minutes,
             hours,
@@ -154,7 +160,7 @@ impl Schedule {
         ))
     }
 
-    fn from(
+    fn from_ordinals(
         seconds: Seconds,
         minutes: Minutes,
         hours: Hours,
@@ -165,13 +171,25 @@ impl Schedule {
     ) -> Schedule {
         Schedule {
             source: None,
-            years: years,
-            days_of_week: days_of_week,
-            months: months,
-            days_of_month: days_of_month,
-            hours: hours,
-            minutes: minutes,
-            seconds: seconds,
+            instant: None,
+            details: ScheduleDetails {
+                years: years,
+                days_of_week: days_of_week,
+                months: months,
+                days_of_month: days_of_month,
+                hours: hours,
+                minutes: minutes,
+                seconds: seconds,
+            },
+        }
+    }
+
+    fn from_duration(duration: std::time::Duration) -> Schedule {
+        let time_instant = Utc::now().timestamp() + (duration.as_secs() as i64);
+        Schedule {
+            source: None,
+            instant: Some(time_instant),
+            details: ScheduleDetails::default(),
         }
     }
 
@@ -179,85 +197,113 @@ impl Schedule {
     where
         Z: TimeZone,
     {
-        let mut query = NextAfterQuery::from(after);
-        for year in self
-            .years
-            .ordinals()
-            .range((Included(query.year_lower_bound()), Unbounded))
-            .cloned()
-        {
-            let month_start = query.month_lower_bound();
-            if !self.months.ordinals().contains(&month_start) {
-                query.reset_month();
-            }
-            let month_range = (Included(month_start), Included(Months::inclusive_max()));
-            for month in self.months.ordinals().range(month_range).cloned() {
-                let day_of_month_start = query.day_of_month_lower_bound();
-                if !self.days_of_month.ordinals().contains(&day_of_month_start) {
-                    query.reset_day_of_month();
-                }
-                let day_of_month_end = days_in_month(month, year);
-                let day_of_month_range = (Included(day_of_month_start), Included(day_of_month_end));
+        match self.instant {
+            Some(s_instant) => {
+                let date_time = DateTime::<Z>::from_utc(
+                    NaiveDateTime::from_timestamp(s_instant, 0),
+                    after.offset().clone(),
+                );
 
-                'day_loop: for day_of_month in self
-                    .days_of_month
+                Some(date_time)
+            }
+            None => {
+                let mut query = NextAfterQuery::from(after);
+                for year in self
+                    .details
+                    .years
                     .ordinals()
-                    .range(day_of_month_range)
+                    .range((Included(query.year_lower_bound()), Unbounded))
                     .cloned()
                 {
-                    let hour_start = query.hour_lower_bound();
-                    if !self.hours.ordinals().contains(&hour_start) {
-                        query.reset_hour();
+                    let month_start = query.month_lower_bound();
+                    if !self.details.months.ordinals().contains(&month_start) {
+                        query.reset_month();
                     }
-                    let hour_range = (Included(hour_start), Included(Hours::inclusive_max()));
-
-                    for hour in self.hours.ordinals().range(hour_range).cloned() {
-                        let minute_start = query.minute_lower_bound();
-                        if !self.minutes.ordinals().contains(&minute_start) {
-                            query.reset_minute();
+                    let month_range = (Included(month_start), Included(Months::inclusive_max()));
+                    for month in self.details.months.ordinals().range(month_range).cloned() {
+                        let day_of_month_start = query.day_of_month_lower_bound();
+                        if !self
+                            .details
+                            .days_of_month
+                            .ordinals()
+                            .contains(&day_of_month_start)
+                        {
+                            query.reset_day_of_month();
                         }
-                        let minute_range =
-                            (Included(minute_start), Included(Minutes::inclusive_max()));
+                        let day_of_month_end = days_in_month(month, year);
+                        let day_of_month_range =
+                            (Included(day_of_month_start), Included(day_of_month_end));
 
-                        for minute in self.minutes.ordinals().range(minute_range).cloned() {
-                            let second_start = query.second_lower_bound();
-                            if !self.seconds.ordinals().contains(&second_start) {
-                                query.reset_second();
+                        'day_loop: for day_of_month in self
+                            .details
+                            .days_of_month
+                            .ordinals()
+                            .range(day_of_month_range)
+                            .cloned()
+                        {
+                            let hour_start = query.hour_lower_bound();
+                            if !self.details.hours.ordinals().contains(&hour_start) {
+                                query.reset_hour();
                             }
-                            let second_range =
-                                (Included(second_start), Included(Seconds::inclusive_max()));
+                            let hour_range =
+                                (Included(hour_start), Included(Hours::inclusive_max()));
 
-                            for second in self.seconds.ordinals().range(second_range).cloned() {
-                                let timezone = after.timezone();
-                                let candidate = if let Some(candidate) = timezone
-                                    .ymd(year as i32, month, day_of_month)
-                                    .and_hms_opt(hour, minute, second)
-                                {
-                                    candidate
-                                } else {
-                                    continue;
-                                };
-                                if !self
-                                    .days_of_week
-                                    .ordinals()
-                                    .contains(&candidate.weekday().number_from_sunday())
-                                {
-                                    continue 'day_loop;
+                            for hour in self.details.hours.ordinals().range(hour_range).cloned() {
+                                let minute_start = query.minute_lower_bound();
+                                if !self.details.minutes.ordinals().contains(&minute_start) {
+                                    query.reset_minute();
                                 }
-                                return Some(candidate);
-                            }
-                            query.reset_minute();
-                        } // End of minutes range
-                        query.reset_hour();
-                    } // End of hours range
-                    query.reset_day_of_month();
-                } // End of Day of Month range
-                query.reset_month();
-            } // End of Month range
-        }
+                                let minute_range =
+                                    (Included(minute_start), Included(Minutes::inclusive_max()));
 
-        // We ran out of dates to try.
-        None
+                                for minute in
+                                    self.details.minutes.ordinals().range(minute_range).cloned()
+                                {
+                                    let second_start = query.second_lower_bound();
+                                    if !self.details.seconds.ordinals().contains(&second_start) {
+                                        query.reset_second();
+                                    }
+                                    let second_range = (
+                                        Included(second_start),
+                                        Included(Seconds::inclusive_max()),
+                                    );
+
+                                    for second in
+                                        self.details.seconds.ordinals().range(second_range).cloned()
+                                    {
+                                        let timezone = after.timezone();
+                                        let candidate = if let Some(candidate) = timezone
+                                            .ymd(year as i32, month, day_of_month)
+                                            .and_hms_opt(hour, minute, second)
+                                        {
+                                            candidate
+                                        } else {
+                                            continue;
+                                        };
+                                        if !self
+                                            .details
+                                            .days_of_week
+                                            .ordinals()
+                                            .contains(&candidate.weekday().number_from_sunday())
+                                        {
+                                            continue 'day_loop;
+                                        }
+                                        return Some(candidate);
+                                    }
+                                    query.reset_minute();
+                                } // End of minutes range
+                                query.reset_hour();
+                            } // End of hours range
+                            query.reset_day_of_month();
+                        } // End of Day of Month range
+                        query.reset_month();
+                    } // End of Month range
+                }
+
+                // We ran out of dates to try.
+                None
+            }
+        }
     }
 
     /// Provides an iterator which will return each DateTime that matches the schedule starting with
@@ -280,43 +326,43 @@ impl Schedule {
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the years included
     /// in this [Schedule](struct.Schedule.html).
     pub fn years(&self) -> &impl TimeUnitSpec {
-        &self.years
+        &self.details.years
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the months of the year included
     /// in this [Schedule](struct.Schedule.html).
     pub fn months(&self) -> &impl TimeUnitSpec {
-        &self.months
+        &self.details.months
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the days of the month included
     /// in this [Schedule](struct.Schedule.html).
     pub fn days_of_month(&self) -> &impl TimeUnitSpec {
-        &self.days_of_month
+        &self.details.days_of_month
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the days of the week included
     /// in this [Schedule](struct.Schedule.html).
     pub fn days_of_week(&self) -> &impl TimeUnitSpec {
-        &self.days_of_week
+        &self.details.days_of_week
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the hours of the day included
     /// in this [Schedule](struct.Schedule.html).
     pub fn hours(&self) -> &impl TimeUnitSpec {
-        &self.hours
+        &self.details.hours
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the minutes of the hour included
     /// in this [Schedule](struct.Schedule.html).
     pub fn minutes(&self) -> &impl TimeUnitSpec {
-        &self.minutes
+        &self.details.minutes
     }
 
     /// Returns a [TimeUnitSpec](trait.TimeUnitSpec.html) describing the seconds of the minute included
     /// in this [Schedule](struct.Schedule.html).
     pub fn seconds(&self) -> &impl TimeUnitSpec {
-        &self.seconds
+        &self.details.seconds
     }
 }
 
@@ -327,7 +373,7 @@ impl FromStr for Schedule {
             Ok((_, mut schedule)) => {
                 schedule.source.replace(expression.to_owned());
                 Ok(schedule)
-            }, // Extract from nom tuple
+            } // Extract from nom tuple
             Err(_) => bail!(ErrorKind::Expression("Invalid cron expression.".to_owned())), //TODO: Details
         }
     }
@@ -500,7 +546,7 @@ named!(
     shorthand_yearly<Input, Schedule>,
     do_parse!(
         tag!("@yearly")
-            >> (Schedule::from(
+            >> (Schedule::from_ordinals(
                 Seconds::from_ordinal(0),
                 Minutes::from_ordinal(0),
                 Hours::from_ordinal(0),
@@ -516,7 +562,7 @@ named!(
     shorthand_monthly<Input, Schedule>,
     do_parse!(
         tag!("@monthly")
-            >> (Schedule::from(
+            >> (Schedule::from_ordinals(
                 Seconds::from_ordinal_set(iter::once(0).collect()),
                 Minutes::from_ordinal_set(iter::once(0).collect()),
                 Hours::from_ordinal_set(iter::once(0).collect()),
@@ -532,7 +578,7 @@ named!(
     shorthand_weekly<Input, Schedule>,
     do_parse!(
         tag!("@weekly")
-            >> (Schedule::from(
+            >> (Schedule::from_ordinals(
                 Seconds::from_ordinal_set(iter::once(0).collect()),
                 Minutes::from_ordinal_set(iter::once(0).collect()),
                 Hours::from_ordinal_set(iter::once(0).collect()),
@@ -548,7 +594,7 @@ named!(
     shorthand_daily<Input, Schedule>,
     do_parse!(
         tag!("@daily")
-            >> (Schedule::from(
+            >> (Schedule::from_ordinals(
                 Seconds::from_ordinal_set(iter::once(0).collect()),
                 Minutes::from_ordinal_set(iter::once(0).collect()),
                 Hours::from_ordinal_set(iter::once(0).collect()),
@@ -564,7 +610,7 @@ named!(
     shorthand_hourly<Input, Schedule>,
     do_parse!(
         tag!("@hourly")
-            >> (Schedule::from(
+            >> (Schedule::from_ordinals(
                 Seconds::from_ordinal_set(iter::once(0).collect()),
                 Minutes::from_ordinal_set(iter::once(0).collect()),
                 Hours::all(),
