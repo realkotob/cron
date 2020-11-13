@@ -13,7 +13,7 @@ use time_unit::*;
 #[derive(Clone, Default, Debug)]
 pub struct Schedule {
     source: Option<String>,
-    instant: Option<i64>,
+    timestamp: Option<i64>,
     details: ScheduleDetails,
 }
 
@@ -171,7 +171,7 @@ impl Schedule {
     ) -> Schedule {
         Schedule {
             source: None,
-            instant: None,
+            timestamp: None,
             details: ScheduleDetails {
                 years: years,
                 days_of_week: days_of_week,
@@ -184,11 +184,19 @@ impl Schedule {
         }
     }
 
+    fn from_timestamp(time_stamp: i64) -> Schedule {
+        Schedule {
+            source: None,
+            timestamp: Some(time_stamp),
+            details: ScheduleDetails::default(),
+        }
+    }
+
     fn from_duration(duration: std::time::Duration) -> Schedule {
         let time_instant = Utc::now().timestamp() + (duration.as_secs() as i64);
         Schedule {
             source: None,
-            instant: Some(time_instant),
+            timestamp: Some(time_instant),
             details: ScheduleDetails::default(),
         }
     }
@@ -197,14 +205,18 @@ impl Schedule {
     where
         Z: TimeZone,
     {
-        match self.instant {
+        match self.timestamp {
             Some(s_instant) => {
-                let date_time = DateTime::<Z>::from_utc(
-                    NaiveDateTime::from_timestamp(s_instant, 0),
-                    after.offset().clone(),
-                );
+                if after.timestamp() >= s_instant {
+                    None
+                } else {
+                    let date_time = DateTime::<Z>::from_utc(
+                        NaiveDateTime::from_timestamp(s_instant, 0),
+                        after.offset().clone(),
+                    );
 
-                Some(date_time)
+                    Some(date_time)
+                }
             }
             None => {
                 let mut query = NextAfterQuery::from(after);
