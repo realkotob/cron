@@ -184,7 +184,7 @@ impl Schedule {
         }
     }
 
-    fn from_timestamp(time_stamp: i64) -> Schedule {
+    pub fn from_timestamp(time_stamp: i64) -> Schedule {
         Schedule {
             source: None,
             timestamp: Some(time_stamp),
@@ -192,7 +192,7 @@ impl Schedule {
         }
     }
 
-    fn from_duration(duration: std::time::Duration) -> Schedule {
+    pub fn from_duration(duration: std::time::Duration) -> Schedule {
         let time_instant = Utc::now().timestamp() + (duration.as_secs() as i64);
         Schedule {
             source: None,
